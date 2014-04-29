@@ -1,3 +1,5 @@
+var Tile = require('./tile')
+
 function Grid(size) {
   this.size = size;
   this.startTiles   = 2;
@@ -365,6 +367,61 @@ Grid.prototype.islands = function() {
   return islands;
 }
 
+Grid.prototype.occupancy = function () {
+    var n = 0;
+    for (var x = 0; x < this.size; x++) {
+        for (var y = 0; y < this.size; y++) {
+            if ( this.cellOccupied( this.indexes[x][y] )) {
+                n += 1
+            }
+        }
+    }
+    return n;
+};
+
+Grid.prototype.getAsNNInput = function() {
+    var a = [];
+    for (var x = 0; x < this.size; x++) {
+        for (var y = 0; y < this.size; y++) {
+            if (this.cells[x][y]) {
+                //var v = (Math.log((this.cells[x][y].value) / Math.LN2) * 0.09).toFixed(2);
+                a.push(Math.log((this.cells[x][y].value) / Math.LN2) * 0.09);
+            } else {
+                a.push(0);
+            }
+        }
+    }
+    return a;
+};
+
+Grid.prototype.getAsNNInputOneHot = function() {
+    var as = [];
+    for (var x = 0; x < this.size; x++) {
+        for (var y = 0; y < this.size; y++) {
+            var a = Array(12).join(1).split('').map(function(){return 0;})
+            if (this.cells[x][y]) {
+                var ix = Math.round(Math.log((this.cells[x][y].value) / Math.LN2)) - 1;
+                a[ix] = 1;
+            }
+            as.push(a);
+        }
+    }
+    return [].concat.apply([], as);
+};
+
+Grid.prototype.getBestTile = function() {
+    var best = 0;
+    for (var x = 0; x < this.size; x++) {
+        for (var y = 0; y < this.size; y++) {
+            if (this.cells[x][y]) {
+                if (this.cells[x][y].value > best) {
+                    best = this.cells[x][y].value;
+                }                
+            } 
+        }
+    }
+    return best;
+};
 
 // measures how smooth the grid is (as if the values of the pieces
 // were interpreted as elevations). Sums of the pairwise difference
@@ -376,15 +433,17 @@ Grid.prototype.smoothness = function() {
   for (var x=0; x<4; x++) {
     for (var y=0; y<4; y++) {
       if ( this.cellOccupied( this.indexes[x][y] )) {
-        var value = Math.log(this.cellContent( this.indexes[x][y] ).value) / Math.log(2);
+          //var value = Math.log(this.cellContent( this.indexes[x][y] ).value) / Math.log(2);
+          var value = this.cellContent( this.indexes[x][y] ).value;
         for (var direction=1; direction<=2; direction++) {
           var vector = this.getVector(direction);
           var targetCell = this.findFarthestPosition(this.indexes[x][y], vector).next;
 
           if (this.cellOccupied(targetCell)) {
             var target = this.cellContent(targetCell);
-            var targetValue = Math.log(target.value) / Math.log(2);
-            smoothness -= Math.abs(value - targetValue);
+              //var targetValue = Math.log(target.value) / Math.log(2);
+              var targetValue = target.value;
+            smoothness += Math.abs(value - targetValue);
           }
         }
       }
@@ -581,3 +640,5 @@ Grid.prototype.isWin = function() {
 //for
 //Grid.prototype.hash = function() {
 //}
+
+module.exports = Grid;

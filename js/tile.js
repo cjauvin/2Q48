@@ -22,3 +22,5 @@ Tile.prototype.clone = function() {
   //newTile.mergedFrom = { x: this.previousPosition.x, y: this.previousPosition.y };
   return newTile;
 }
+
+module.exports = Tile;

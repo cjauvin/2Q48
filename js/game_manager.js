@@ -1,97 +1,126 @@
+var deepqlearn = require('./convnetjs/deepqlearn');
+var Grid = require('./grid')
+
 function GameManager(size, InputManager, Actuator) {
-  this.size         = size; // Size of the grid
-  this.inputManager = new InputManager;
-  this.actuator     = new Actuator;
+    this.size         = size; // Size of the grid
+    
+    //var num_inputs = 16; // 9 eyes, each sees 3 numbers (wall, green, red thing proximity)
+    var num_inputs = 16 * 11;
+    var num_actions = 4; // 5 possible angles agent can turn
+    var temporal_window = 0; // amount of temporal memory. 0 = agent lives in-the-moment :)
+    var network_size = num_inputs*temporal_window + num_actions*temporal_window + num_inputs;
 
-  this.running      = false;
+    // the value function network computes a value of taking any of the possible actions
+    // given an input state. Here we specify one explicitly the hard way
+    // but user could also equivalently instead use opt.hidden_layer_sizes = [20,20]
+    // to just insert simple relu hidden layers.
+    var layer_defs = [];
+    layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:network_size});
+    //layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
+    layer_defs.push({type:'fc', num_neurons: 200, activation:'relu'});
+    layer_defs.push({type:'regression', num_neurons:num_actions});
 
-  this.inputManager.on("move", this.move.bind(this));
-  this.inputManager.on("restart", this.restart.bind(this));
+    // options for the Temporal Difference learner that trains the above net
+    // by backpropping the temporal difference learning rule.
+    var tdtrainer_options = {learning_rate:0.001, momentum:0.0, batch_size:64, l2_decay:0.01};
 
-  this.inputManager.on('think', function() {
-    var best = this.ai.getBest();
-    this.actuator.showHint(best.move);
-  }.bind(this));
+    var opt = {};
+    opt.temporal_window = temporal_window;
+    opt.experience_size = 50; //30000;
+    opt.start_learn_threshold = 10;//1000;
+    opt.gamma = 0.7;
+    opt.learning_steps_total = 200000;
+    opt.learning_steps_burnin = 0; //3000;
+    opt.epsilon_min = 0.05;
+    opt.epsilon_test_time = 0.05;
+    opt.layer_defs = layer_defs;
+    opt.tdtrainer_options = tdtrainer_options;
+    
+    var brain = new deepqlearn.Brain(num_inputs, num_actions, opt); // woohoo
+    this.brain = brain
 
-
-  this.inputManager.on('run', function() {
-    if (this.running) {
-      this.running = false;
-      this.actuator.setRunButton('Auto-run');
-    } else {
-      this.running = true;
-      this.run()
-      this.actuator.setRunButton('Stop');
-    }
-  }.bind(this));
-
-  this.setup();
+    this.setup();
+    this.run();    
 }
-
-// Restart the game
-GameManager.prototype.restart = function () {
-  this.actuator.restart();
-  this.running = false;
-  this.actuator.setRunButton('Auto-run');
-  this.setup();
-};
 
 // Set up the game
 GameManager.prototype.setup = function () {
   this.grid         = new Grid(this.size);
   this.grid.addStartTiles();
-
-  this.ai           = new AI(this.grid);
-
   this.score        = 0;
   this.over         = false;
   this.won          = false;
 
-  // Update the actuator
-  this.actuate();
-};
-
-
-// Sends the updated grid to the actuator
-GameManager.prototype.actuate = function () {
-  this.actuator.actuate(this.grid, {
-    score: this.score,
-    over:  this.over,
-    won:   this.won
-  });
 };
 
 // makes a given move and updates state
 GameManager.prototype.move = function(direction) {
-  var result = this.grid.move(direction);
-  this.score += result.score;
-
-  if (!result.won) {
-    if (result.moved) {
-      this.grid.computerMove();
+    
+    var prev_smoothness = this.grid.smoothness();
+    var prev_occupancy = this.grid.occupancy();
+    
+    var result = this.grid.move(direction);
+    this.score += result.score;
+    
+    var is_illegal = false;
+    if (!result.won) {
+        if (result.moved) {
+            this.grid.computerMove();
+        } else {
+            is_illegal = true;
+        }
+    } else {
+        this.won = true;
     }
-  } else {
-    this.won = true;
-  }
-
-  //console.log(this.grid.valueSum());
-
-  if (!this.grid.movesAvailable()) {
-    this.over = true; // Game over!
-  }
-
-  this.actuate();
+    
+    if (!this.grid.movesAvailable()) {
+        this.over = true; // Game over!
+    }
+    
+    return !is_illegal;        
 }
 
 // moves continuously until game is over
 GameManager.prototype.run = function() {
-  var best = this.ai.getBest();
-  this.move(best.move);
-  var timeout = animationDelay;
-  if (this.running && !this.over && !this.won) {
-    var self = this;
-    setTimeout(function(){
-      self.run();
-    }, timeout);
-  }
+
+    console.log('learning while playing..');
+    
+    while (!this.over && !this.won) {
+        
+        var action = this.brain.forward(this.grid.getAsNNInputOneHot());            
+        var prev_smoothness = this.grid.smoothness();
+        var prev_occupancy = this.grid.occupancy();
+        var reward = -1;
+                
+        if (this.move(action)) {
+            
+            var curr_smoothness = this.grid.smoothness();
+            var curr_occupancy = this.grid.occupancy();
+            var smoothness_reward = 0;
+            if (curr_smoothness < prev_smoothness) {
+                smoothness_reward = 1;
+            } else if (curr_smoothness > prev_smoothness) {
+                smoothness_reward = -1;
+            }
+            var occupancy_reward = 0;
+            if (curr_occupancy <= prev_occupancy) {
+                occupancy_reward = 1;
+            } else {
+                occupancy_reward = -1;
+            }
+            //console.log(smoothness_reward, occupancy_reward);
+            reward = (0.5 * smoothness_reward) + (0.5 * occupancy_reward);
+        }
+        //console.log(reward);
+        this.brain.backward(reward);
+        
+    }
+    console.log('average Q-learning loss: ' + this.brain.average_loss_window.get_average());
+    console.log('smooth-ish reward: ' + this.brain.average_reward_window.get_average());
+    console.log('best tile:', this.grid.getBestTile());
+    console.log('---------------------------------');
+    this.setup();
+    this.run();    
 }
+
+module.exports.GameManager = GameManager;
