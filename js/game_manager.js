@@ -1,23 +1,22 @@
 var deepqlearn = require('./convnetjs/deepqlearn');
 var Grid = require('./grid')
 
-function GameManager(size, InputManager, Actuator) {
+function GameManager(size) {
     this.size         = size; // Size of the grid
-    
-    //var num_inputs = 16; // 9 eyes, each sees 3 numbers (wall, green, red thing proximity)
-    var num_inputs = 16 * 11;
+
+    // one-hot: 16 * 11 inputs
+    // normal: 16 inputs
+    this.use_one_hot_board_encoding = true;
+    var num_inputs = 16 * (this.use_one_hot_encoding ? 11 : 1);
     var num_actions = 4; // 5 possible angles agent can turn
     var temporal_window = 0; // amount of temporal memory. 0 = agent lives in-the-moment :)
     var network_size = num_inputs*temporal_window + num_actions*temporal_window + num_inputs;
 
-    // the value function network computes a value of taking any of the possible actions
-    // given an input state. Here we specify one explicitly the hard way
-    // but user could also equivalently instead use opt.hidden_layer_sizes = [20,20]
-    // to just insert simple relu hidden layers.
     var layer_defs = [];
+    // I have no idea what's the right topology for this..
     layer_defs.push({type:'input', out_sx:1, out_sy:1, out_depth:network_size});
-    //layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
-    layer_defs.push({type:'fc', num_neurons: 200, activation:'relu'});
+    layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
+    layer_defs.push({type:'fc', num_neurons: 50, activation:'relu'});
     layer_defs.push({type:'regression', num_neurons:num_actions});
 
     // options for the Temporal Difference learner that trains the above net
@@ -26,7 +25,7 @@ function GameManager(size, InputManager, Actuator) {
 
     var opt = {};
     opt.temporal_window = temporal_window;
-    opt.experience_size = 50; //30000;
+    opt.experience_size = 100; //30000;
     opt.start_learn_threshold = 10;//1000;
     opt.gamma = 0.7;
     opt.learning_steps_total = 200000;
@@ -83,19 +82,22 @@ GameManager.prototype.move = function(direction) {
 // moves continuously until game is over
 GameManager.prototype.run = function() {
 
-    console.log('learning while playing..');
-    
+    console.log('learning while playing..');    
     while (!this.over && !this.won) {
-        
-        var action = this.brain.forward(this.grid.getAsNNInputOneHot());            
+
+        var input_arr = this.use_one_hot_board_encoding ?
+                           this.grid.getAsNNInputOneHot() : this.grid.getAsNNInput();
+        var action = this.brain.forward(input_arr);
         var prev_smoothness = this.grid.smoothness();
         var prev_occupancy = this.grid.occupancy();
-        var reward = -1;
+        var prev_monotonicity = this.grid.monotonicity();
+        var reward = -1; // illegal move (i.e. could not move in that direction) has neg reward
                 
-        if (this.move(action)) {
+        if (this.move(action)) { // legal
             
             var curr_smoothness = this.grid.smoothness();
             var curr_occupancy = this.grid.occupancy();
+            var curr_monotonicity = this.grid.monotonicity();
             var smoothness_reward = 0;
             if (curr_smoothness < prev_smoothness) {
                 smoothness_reward = 1;
@@ -108,8 +110,14 @@ GameManager.prototype.run = function() {
             } else {
                 occupancy_reward = -1;
             }
+            var monotonicity_reward = 0;
+            if (curr_monotonicity > prev_monotonicity) {
+                monotonicity_reward = 1;
+            } else if (curr_monotonicity < prev_monotonicity) {
+                monotonicity_reward = -1;
+            }
             //console.log(smoothness_reward, occupancy_reward);
-            reward = (0.5 * smoothness_reward) + (0.5 * occupancy_reward);
+            reward = (1/3 * smoothness_reward) + (1/3 * occupancy_reward) + (1/3 * monotonicity_reward);
         }
         //console.log(reward);
         this.brain.backward(reward);
